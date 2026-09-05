@@ -10,6 +10,7 @@ export default function Header({ user, onLogout, onNavigate, season, onSeasonCha
   const [isSearching, setIsSearching] = useState(false);
   const [notifications, setNotifications] = useState(3);
   const [settingsModalTab, setSettingsModalTab] = useState(null);
+  const [availableSeasons, setAvailableSeasons] = useState(['2026', '2025', '2024']);
 
   useEffect(() => {
     async function fetchSeasons() {
