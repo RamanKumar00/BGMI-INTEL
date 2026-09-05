@@ -1,0 +1,66 @@
+sources:
+  liquipedia:
+    enabled: true
+    method: api
+    # BGMI / Indian players and teams live on the pubgmobile wiki, not pubg
+    endpoint: "https://liquipedia.net/pubgmobile/api.php"
+    wiki: "pubgmobile"
+    rate_limit_seconds: 2.0
+    user_agent: "BGMIIntelETL/1.0 (contact@bgmi-intel.com)"
+    # Real Liquipedia category names (verified via API)
+    player_category: "Indian Players"
+    team_category: "Indian Teams"
+    # Known BGMI tournament page titles (verified via Liquipedia search API).
+    # The category "Battlegrounds Mobile India Tournaments" returns 0 members,
+    # so we use direct page title fetching for tournaments.
+    known_tournaments:
+      - "Battlegrounds Mobile India Series/2026"
+      - "Battlegrounds Mobile India Series/2025"
+      - "Battlegrounds Mobile India Series/2024"
+      - "Battlegrounds Mobile India Series/2023"
+      - "Battlegrounds Mobile India Series/2021"
+      - "Battlegrounds Mobile India Pro Series/2025"
+      - "Battlegrounds Mobile India Pro Series/2024"
+      - "Battlegrounds Mobile India Pro Series/2023"
+      - "BGMI Masters Series/Season 2"
+      - "BGMI Masters Series"
+      - "ESL/Snapdragon Pro Series/Season 6/BGMI"
+
+  nodwin:
+    enabled: true
+    method: web_scrape
+    base_url: "https://nodwingaming.com"
+    rate_limit_seconds: 3.0
+    user_agent: "BGMIIntelETL/1.0 (contact@bgmi-intel.com)"
+    # Known tournament slugs for BGMI stat pages
+    tournament_slugs:
+      - "bmps-2024"
+      - "bgms-s2"
+      - "bmps-2025"
+
+  esportstats:
+    enabled: true
+    method: supabase_api
+    # esportstats.in uses Supabase as its backend. The anon key is public
+    # (embedded in their page HTML) and grants read-only access to the
+    # players, teams, and tournaments tables (RLS-protected).
+    supabase_url: "https://tgizxbpxtvoejlcygboy.supabase.co"
+    # Public anon key — safe to store; actual data access is controlled
+    # by Supabase Row Level Security on their tables.
+    anon_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnaXp4YnB4dHZvZWpsY3lnYm95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU3MTY4MjEsImV4cCI6MjEwMTI5MjgyMX0.5kYnGMljtJCr_E2HP4_bkq6UTl10jjEaSPDE7B2gmvc"
+    rate_limit_seconds: 1.0
+    # Accessible tables (others return 404 due to RLS)
+    accessible_tables:
+      - players
+      - teams
+      - tournaments
+
+  apify_scraper:
+    enabled: false
+    method: apify
+    actor_id: "apify/scraping-actor-id"
+
+  official_portal:
+    enabled: false
+    method: web_scrape
+    endpoint: "https://esports.battlegroundsmobileindia.com/"
