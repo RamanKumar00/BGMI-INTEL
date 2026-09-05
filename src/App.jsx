@@ -9,7 +9,7 @@ const STORAGE_KEY = 'bgmi_intel_user';
 
 export default function App() {
   const [view, setView] = useState('login'); // 'login' or 'signup'
-  const [isBooting, setIsBooting] = useState(true); // Default true so initial authenticated loads show boot sequence
+  const [isBooting, setIsBooting] = useState(false); // Default false so app loads immediately without audio autoplay block
   
   // Initialize user from localStorage, defaulting to active session so reload doesn't logout automatically
   const [user, setUser] = useState(() => {
