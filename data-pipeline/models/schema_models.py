@@ -198,6 +198,9 @@ class Match(Base):
     player_match_stats = relationship("PlayerMatchStats", back_populates="match", cascade="all, delete-orphan")
     map_events = relationship("MapEvent", back_populates="match", cascade="all, delete-orphan")
     drop_locations = relationship("DropLocation", back_populates="match", cascade="all, delete-orphan")
+    match_teams = relationship("MatchTeam", back_populates="match", cascade="all, delete-orphan")
+    zone_events = relationship("ZoneEvent", back_populates="match", cascade="all, delete-orphan")
+    eliminations = relationship("EliminationEvent", back_populates="match", cascade="all, delete-orphan")
 
 class PlayerMatchStats(Base):
     __tablename__ = "player_match_stats"
@@ -295,9 +298,69 @@ class DropLocation(Base):
     x = Column(Float, nullable=True)
     y = Column(Float, nullable=True)
     timestamp = Column(Float, nullable=True)
+    is_contested = Column(Boolean, default=False)
+    early_fight = Column(Boolean, default=False)
+    placement = Column(Integer, nullable=True)
+    finishes = Column(Integer, nullable=True)
+    survival_time = Column(Float, nullable=True)
 
     team = relationship("Team", back_populates="drop_locations")
     match = relationship("Match", back_populates="drop_locations")
+
+class MatchTeam(Base):
+    __tablename__ = "match_teams"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    match_id = Column(String(50), ForeignKey("matches.match_id", ondelete="CASCADE"), nullable=False, index=True)
+    team_id = Column(String(50), ForeignKey("teams.team_id", ondelete="CASCADE"), nullable=False, index=True)
+    placement = Column(Integer, nullable=True, index=True)
+    finishes = Column(Integer, default=0)
+    placement_points = Column(Integer, default=0)
+    finish_points = Column(Integer, default=0)
+    total_points = Column(Integer, default=0)
+    survival_time = Column(Float, nullable=True) # in seconds
+    drop_location = Column(String(100), nullable=True)
+    status = Column(String(50), default="Eliminated") # Winner, Top 3, Top 5, Eliminated
+
+    match = relationship("Match", back_populates="match_teams")
+    team = relationship("Team")
+
+class ZoneEvent(Base):
+    __tablename__ = "zone_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    match_id = Column(String(50), ForeignKey("matches.match_id", ondelete="CASCADE"), nullable=False, index=True)
+    phase = Column(Integer, nullable=False, index=True) # 1 to 8
+    radius_m = Column(Float, nullable=False) # in meters (e.g. 2000, 1400, 950, 600, 350, 180, 80, 25)
+    center_x = Column(Float, nullable=False) # 0 to 100%
+    center_y = Column(Float, nullable=False) # 0 to 100%
+    time_seconds = Column(Float, nullable=False)
+    teams_alive = Column(Integer, nullable=True)
+    players_alive = Column(Integer, nullable=True)
+
+    match = relationship("Match", back_populates="zone_events")
+
+class EliminationEvent(Base):
+    __tablename__ = "elimination_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    match_id = Column(String(50), ForeignKey("matches.match_id", ondelete="CASCADE"), nullable=False, index=True)
+    timestamp_seconds = Column(Float, nullable=False, index=True)
+    victim_player_id = Column(String(50), ForeignKey("players.player_id", ondelete="CASCADE"), nullable=True)
+    victim_team_id = Column(String(50), ForeignKey("teams.team_id", ondelete="CASCADE"), nullable=True)
+    victim_name = Column(String(100), nullable=False)
+    victim_team_name = Column(String(100), nullable=False)
+    attacker_player_id = Column(String(50), ForeignKey("players.player_id", ondelete="SET NULL"), nullable=True)
+    attacker_team_id = Column(String(50), ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)
+    attacker_name = Column(String(100), nullable=True)
+    attacker_team_name = Column(String(100), nullable=True)
+    weapon = Column(String(50), nullable=True)
+    x = Column(Float, nullable=True)
+    y = Column(Float, nullable=True)
+    is_team_wipe = Column(Boolean, default=False)
+    eliminated_rank = Column(Integer, nullable=True) # #16, #15, etc.
+
+    match = relationship("Match", back_populates="eliminations")
 
 class Achievement(Base):
     __tablename__ = "achievements"

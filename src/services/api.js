@@ -112,14 +112,124 @@ export async function getTournamentIntel(tournamentId) {
   return data;
 }
 
-export async function getMatches() {
-  const data = await fetchJson('/matches');
-  return data || [];
+export async function getMatches(params = {}) {
+  const query = new URLSearchParams();
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.stage && params.stage !== 'All') query.append('stage', params.stage);
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.team_id && params.team_id !== 'All') query.append('team_id', params.team_id);
+  if (params.search) query.append('search', params.search);
+  if (params.page) query.append('page', params.page);
+  if (params.page_size) query.append('page_size', params.page_size);
+  
+  const qStr = query.toString();
+  const data = await fetchJson(`/matches${qStr ? `?${qStr}` : ''}`);
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  return data.matches || [];
+}
+
+export async function getMatchesWithMeta(params = {}) {
+  const query = new URLSearchParams();
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.stage && params.stage !== 'All') query.append('stage', params.stage);
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.team_id && params.team_id !== 'All') query.append('team_id', params.team_id);
+  if (params.search) query.append('search', params.search);
+  if (params.page) query.append('page', params.page);
+  if (params.page_size) query.append('page_size', params.page_size);
+  
+  const qStr = query.toString();
+  const data = await fetchJson(`/matches${qStr ? `?${qStr}` : ''}`);
+  return data || { total: 0, page: 1, page_size: 50, matches: [] };
 }
 
 export async function getMatch(matchId) {
   const data = await fetchJson(`/matches/${encodeURIComponent(matchId)}`);
   return data;
+}
+
+export async function compareMatchesApi(matchIds) {
+  const idsStr = Array.isArray(matchIds) ? matchIds.join(',') : matchIds;
+  const data = await fetchJson(`/matches/compare?match_ids=${encodeURIComponent(idsStr)}`);
+  return data?.comparisons || [];
+}
+
+// ---------------- Drop Analytics APIs ----------------
+export async function getDropsSummary(params = {}) {
+  const query = new URLSearchParams();
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.stage && params.stage !== 'All') query.append('stage', params.stage);
+  if (params.team_id && params.team_id !== 'All') query.append('team_id', params.team_id);
+  if (params.location && params.location !== 'All') query.append('location', params.location);
+
+  const qStr = query.toString();
+  return await fetchJson(`/analytics/drops/summary${qStr ? `?${qStr}` : ''}`);
+}
+
+export async function getDropsHeatmap(params = {}) {
+  const query = new URLSearchParams();
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.stage && params.stage !== 'All') query.append('stage', params.stage);
+  if (params.team_id && params.team_id !== 'All') query.append('team_id', params.team_id);
+
+  const qStr = query.toString();
+  return (await fetchJson(`/analytics/drops/heatmap${qStr ? `?${qStr}` : ''}`)) || [];
+}
+
+export async function getDropsLocations(params = {}) {
+  const query = new URLSearchParams();
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.stage && params.stage !== 'All') query.append('stage', params.stage);
+  if (params.team_id && params.team_id !== 'All') query.append('team_id', params.team_id);
+
+  const qStr = query.toString();
+  return (await fetchJson(`/analytics/drops/locations${qStr ? `?${qStr}` : ''}`)) || [];
+}
+
+export async function getTeamDropProfile(teamId, params = {}) {
+  const query = new URLSearchParams();
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+
+  const qStr = query.toString();
+  return await fetchJson(`/analytics/drops/teams/${encodeURIComponent(teamId)}${qStr ? `?${qStr}` : ''}`);
+}
+
+export async function getDropsContests(params = {}) {
+  const query = new URLSearchParams();
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.stage && params.stage !== 'All') query.append('stage', params.stage);
+
+  const qStr = query.toString();
+  return (await fetchJson(`/analytics/drops/contests${qStr ? `?${qStr}` : ''}`)) || [];
+}
+
+export async function getDropsClashMatrix(params = {}) {
+  const query = new URLSearchParams();
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+
+  const qStr = query.toString();
+  const data = await fetchJson(`/analytics/drops/clash-matrix${qStr ? `?${qStr}` : ''}`);
+  return data?.clashes || [];
+}
+
+export async function getDropsHistory(params = {}) {
+  const query = new URLSearchParams();
+  if (params.page) query.append('page', params.page);
+  if (params.page_size) query.append('page_size', params.page_size);
+  if (params.map && params.map !== 'All') query.append('map', params.map);
+  if (params.tournament_id && params.tournament_id !== 'All') query.append('tournament_id', params.tournament_id);
+  if (params.team_id && params.team_id !== 'All') query.append('team_id', params.team_id);
+  if (params.location && params.location !== 'All') query.append('location', params.location);
+
+  const qStr = query.toString();
+  return await fetchJson(`/analytics/drops/history${qStr ? `?${qStr}` : ''}`);
 }
 
 export async function getMapStats(mapName) {

@@ -10,6 +10,7 @@ import VersusView from './VersusView';
 import MapIntelView from './MapIntelView';
 import AchievementsView from './AchievementsView';
 import MediaHubView from './MediaHubView';
+import DropAnalysisView from './DropAnalysisView';
 import LiveFeedMarquee from './LiveFeedMarquee';
 import { ShieldAlert } from 'lucide-react';
 
@@ -22,11 +23,18 @@ export default function DashboardLayout({ user, onLogout }) {
     const handleOpenMap = (e) => {
       if (e.detail?.map) {
         setMapIntelInitialMap(e.detail.map);
+        setActiveTab('map_intel');
       }
-      setActiveTab('map_intel');
+    };
+    const handleOpenMatch = (e) => {
+      setActiveTab('match_explorer');
     };
     window.addEventListener('open-interactive-map', handleOpenMap);
-    return () => window.removeEventListener('open-interactive-map', handleOpenMap);
+    window.addEventListener('open-match-explorer', handleOpenMatch);
+    return () => {
+      window.removeEventListener('open-interactive-map', handleOpenMap);
+      window.removeEventListener('open-match-explorer', handleOpenMatch);
+    };
   }, []);
 
   const renderTabContent = () => {
@@ -48,8 +56,19 @@ export default function DashboardLayout({ user, onLogout }) {
       case 'versus':
         return <VersusView season={season} />;
       case 'map_intel':
-      case 'drop_analysis':
         return <MapIntelView initialMap={mapIntelInitialMap} user={user} />;
+      case 'drop_analysis':
+        return (
+          <DropAnalysisView 
+            season={season} 
+            onNavigateToMatch={(matchId) => {
+              setActiveTab('match_explorer');
+              setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('open-match-explorer', { detail: { matchId } }));
+              }, 50);
+            }} 
+          />
+        );
       case 'achievements':
         return <AchievementsView season={season} />;
 

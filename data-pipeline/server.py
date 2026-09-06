@@ -18,8 +18,9 @@ from models.schema_models import (
     Player, PlayerAlias, Organization, PlayerOrgHistory,
     Tournament, Team, TeamRoster, Match, PlayerMatchStats,
     PlayerTournamentStats, PlayerMapStats, MapEvent, DropLocation, Achievement,
-    TeamAsset, OrganizationAlias, MediaAsset
+    TeamAsset, OrganizationAlias, MediaAsset, MatchTeam, ZoneEvent, EliminationEvent
 )
+from analytics.drop_analytics import DropAnalyticsEngine
 from models.map_models import MapModel, MapLayerModel, MapMarkerModel
 
 class MarkerCreatePayload(BaseModel):
@@ -809,9 +810,113 @@ def get_tournament_intel(tournament_id: str, db: Session = Depends(get_db)):
 # ==========================================================================
 
 @app.get("/api/matches")
-def get_matches(db: Session = Depends(get_db)):
-    matches = db.query(Match).all()
-    return matches
+def get_matches(
+    tournament_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    map: Optional[str] = None,
+    team_id: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db)
+):
+    query = db.query(Match)
+    
+    if tournament_id and tournament_id != "All":
+        query = query.filter(Match.tournament_id == tournament_id)
+    if stage and stage != "All":
+        query = query.filter(Match.stage == stage)
+    if map and map != "All":
+        query = query.filter(Match.map == map)
+    if search:
+        search_fmt = f"%{search}%"
+        query = query.filter(or_(
+            Match.match_id.ilike(search_fmt),
+            Match.stage.ilike(search_fmt),
+            Match.map.ilike(search_fmt)
+        ))
+
+    # If team_id is filtered, join with MatchTeam
+    if team_id and team_id != "All":
+        query = query.join(MatchTeam, Match.match_id == MatchTeam.match_id).filter(MatchTeam.team_id == team_id)
+
+    total_count = query.count()
+    matches = query.order_by(Match.date.desc().nulls_last(), Match.match_number.desc().nulls_last()).offset((page - 1) * page_size).limit(page_size).all()
+    
+    results = []
+    for m in matches:
+        # Tournament details
+        tourn = db.query(Tournament).filter(Tournament.tournament_id == m.tournament_id).first()
+        tourn_name = tourn.tournament_name if tourn else (m.tournament_id or "BGMI Championship")
+        
+        # Winner details
+        winner_name = "TBD"
+        if m.winner_team_id:
+            w_team = db.query(Team).filter(Team.team_id == m.winner_team_id).first()
+            winner_name = w_team.team_name if w_team else f"Team {m.winner_team_id[:6]}"
+            
+        # Total teams and finishes in match
+        team_count = db.query(MatchTeam).filter(MatchTeam.match_id == m.match_id).count() or 16
+        total_finishes = db.query(func.sum(MatchTeam.finishes)).filter(MatchTeam.match_id == m.match_id).scalar() or 0
+        
+        results.append({
+            "match_id": m.match_id,
+            "tournament_id": m.tournament_id,
+            "tournament_name": tourn_name,
+            "match_number": m.match_number,
+            "map": m.map,
+            "date": m.date,
+            "stage": m.stage or "Grand Finals",
+            "group": m.group or f"Match #{m.match_number}",
+            "winner_team_id": m.winner_team_id,
+            "winner_team_name": winner_name,
+            "total_teams": team_count,
+            "total_finishes": total_finishes,
+            "source": m.source or "Liquipedia"
+        })
+        
+    return {
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "matches": results
+    }
+
+@app.get("/api/matches/compare")
+def compare_matches(match_ids: str = Query(..., description="Comma-separated match IDs"), db: Session = Depends(get_db)):
+    ids = [mid.strip() for mid in match_ids.split(",") if mid.strip()]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 match IDs required for comparison")
+        
+    comparisons = []
+    for mid in ids[:4]: # Cap at 4 matches max
+        m = db.query(Match).filter(Match.match_id == mid).first()
+        if not m:
+            continue
+        tourn = db.query(Tournament).filter(Tournament.tournament_id == m.tournament_id).first()
+        teams = db.query(MatchTeam, Team.team_name).join(Team, MatchTeam.team_id == Team.team_id).filter(MatchTeam.match_id == mid).order_by(MatchTeam.placement.asc()).all()
+        
+        comparisons.append({
+            "match_id": m.match_id,
+            "match_number": m.match_number,
+            "tournament_name": tourn.tournament_name if tourn else m.tournament_id,
+            "map": m.map,
+            "date": m.date,
+            "stage": m.stage,
+            "total_teams": len(teams),
+            "standings": [
+                {
+                    "placement": mt.placement,
+                    "team_name": tname,
+                    "finishes": mt.finishes,
+                    "total_points": mt.total_points,
+                    "drop_location": mt.drop_location,
+                    "survival_time": mt.survival_time
+                }
+                for mt, tname in teams
+            ]
+        })
+    return {"comparisons": comparisons}
 
 @app.get("/api/matches/{match_id}")
 def get_match(match_id: str, db: Session = Depends(get_db)):
@@ -819,32 +924,204 @@ def get_match(match_id: str, db: Session = Depends(get_db)):
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
     
-    # Get match stats
-    stats = db.query(PlayerMatchStats).filter(PlayerMatchStats.match_id == match_id).all()
-    stats_list = []
-    for s in stats:
-        player = db.query(Player).filter(Player.player_id == s.player_id).first()
-        stats_list.append({
-            "player_id": s.player_id,
-            "ign": player.ign if player else "Unknown",
-            "finishes": s.finishes,
-            "kills": s.kills,
-            "damage": s.damage,
-            "placement": s.placement,
-            "points": s.points
+    tourn = db.query(Tournament).filter(Tournament.tournament_id == match.tournament_id).first()
+    tourn_name = tourn.tournament_name if tourn else (match.tournament_id or "BGMI Championship")
+    
+    # 1. Standings: Full 16 teams
+    match_teams = db.query(MatchTeam, Team.team_name).join(Team, MatchTeam.team_id == Team.team_id).filter(MatchTeam.match_id == match_id).order_by(MatchTeam.placement.asc()).all()
+    
+    standings_list = []
+    winner_name = "TBD"
+    for mt, tname in match_teams:
+        if mt.placement == 1:
+            winner_name = tname
+        standings_list.append({
+            "placement": mt.placement,
+            "team_id": mt.team_id,
+            "team_name": tname,
+            "finishes": mt.finishes,
+            "placement_points": mt.placement_points,
+            "finish_points": mt.finish_points,
+            "total_points": mt.total_points,
+            "survival_time": mt.survival_time,
+            "drop_location": mt.drop_location,
+            "status": mt.status
         })
-        
+
+    # 2. Player Performance
+    stats = db.query(PlayerMatchStats, Player.ign, Team.team_name).outerjoin(Player, PlayerMatchStats.player_id == Player.player_id).outerjoin(Team, PlayerMatchStats.team_id == Team.team_id).filter(PlayerMatchStats.match_id == match_id).order_by(PlayerMatchStats.finishes.desc(), PlayerMatchStats.damage.desc()).all()
+    
+    player_stats_list = []
+    for s, ign, tname in stats:
+        player_stats_list.append({
+            "player_id": s.player_id,
+            "ign": ign or "Player",
+            "team_id": s.team_id,
+            "team_name": tname or "Independent",
+            "finishes": s.finishes or 0,
+            "damage": round(s.damage or 0.0, 1),
+            "knocks": s.knocks or 0,
+            "assists": s.assists or 0,
+            "headshots": s.headshots or 0,
+            "survival_time": s.survival_time or 0.0,
+            "placement": s.placement or 0,
+            "points": s.points or 0
+        })
+
+    # 3. Zone Progression (Phases 1-8)
+    zones = db.query(ZoneEvent).filter(ZoneEvent.match_id == match_id).order_by(ZoneEvent.phase.asc()).all()
+    zones_list = [
+        {
+            "phase": z.phase,
+            "radius_m": z.radius_m,
+            "center_x": z.center_x,
+            "center_y": z.center_y,
+            "time_seconds": z.time_seconds,
+            "teams_alive": z.teams_alive,
+            "players_alive": z.players_alive
+        }
+        for z in zones
+    ]
+
+    # 4. Elimination Feed
+    elims = db.query(EliminationEvent).filter(EliminationEvent.match_id == match_id).order_by(EliminationEvent.timestamp_seconds.asc()).all()
+    elims_list = [
+        {
+            "timestamp_seconds": e.timestamp_seconds,
+            "victim_team_id": e.victim_team_id,
+            "victim_name": e.victim_name,
+            "victim_team_name": e.victim_team_name,
+            "attacker_team_id": e.attacker_team_id,
+            "attacker_name": e.attacker_name,
+            "attacker_team_name": e.attacker_team_name,
+            "weapon": e.weapon,
+            "x": e.x,
+            "y": e.y,
+            "is_team_wipe": e.is_team_wipe
+        }
+        for e in elims
+    ]
+
+    # 5. Drops in this match
+    drops = db.query(DropLocation, Team.team_name).join(Team, DropLocation.team_id == Team.team_id).filter(DropLocation.match_id == match_id).all()
+    drops_list = [
+        {
+            "team_id": d.team_id,
+            "team_name": tname,
+            "drop_location": d.drop_location,
+            "x": d.x,
+            "y": d.y,
+            "is_contested": d.is_contested,
+            "placement": d.placement,
+            "finishes": d.finishes
+        }
+        for d, tname in drops
+    ]
+
     return {
-        "match_id": match.match_id,
-        "tournament_id": match.tournament_id,
-        "match_number": match.match_number,
-        "map": match.map,
-        "date": match.date,
-        "stage": match.stage,
-        "group": match.group,
-        "winner_team_id": match.winner_team_id,
-        "statistics": stats_list
+        "overview": {
+            "match_id": match.match_id,
+            "tournament_id": match.tournament_id,
+            "tournament_name": tourn_name,
+            "match_number": match.match_number,
+            "map": match.map,
+            "date": match.date,
+            "stage": match.stage or "Grand Finals",
+            "group": match.group or f"Match #{match.match_number}",
+            "winner_team_id": match.winner_team_id,
+            "winner_team_name": winner_name,
+            "total_teams": len(standings_list),
+            "total_finishes": sum(s["finishes"] for s in standings_list),
+            "source": match.source or "Liquipedia"
+        },
+        "standings": standings_list,
+        "players": player_stats_list,
+        "zones": zones_list,
+        "eliminations": elims_list,
+        "drops": drops_list,
+        "positional_telemetry_available": False, # Verified data transparency
+        "telemetry_notice": "High-frequency player position trajectory telemetry is not available for this broadcast match. Drop markers, zone circles, and elimination events are displayed."
     }
+
+# ==========================================================================
+# DROP ANALYTICS ENDPOINTS
+# ==========================================================================
+
+@app.get("/api/analytics/drops/summary")
+def get_drops_summary(
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    team_id: Optional[str] = None,
+    location: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_summary(map_name=map, tournament_id=tournament_id, stage=stage, team_id=team_id, location=location)
+
+@app.get("/api/analytics/drops/heatmap")
+def get_drops_heatmap(
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    team_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_heatmap_points(map_name=map, tournament_id=tournament_id, stage=stage, team_id=team_id)
+
+@app.get("/api/analytics/drops/locations")
+def get_drops_locations(
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    team_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_locations_table(map_name=map, tournament_id=tournament_id, stage=stage, team_id=team_id)
+
+@app.get("/api/analytics/drops/teams/{team_id}")
+def get_team_drop_profile(
+    team_id: str,
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_team_drop_profile(team_id=team_id, map_name=map, tournament_id=tournament_id)
+
+@app.get("/api/analytics/drops/contests")
+def get_drops_contests(
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_contests_analysis(map_name=map, tournament_id=tournament_id, stage=stage)
+
+@app.get("/api/analytics/drops/clash-matrix")
+def get_drops_clash_matrix(
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_clash_matrix(map_name=map, tournament_id=tournament_id)
+
+@app.get("/api/analytics/drops/history")
+def get_drops_history(
+    page: int = 1,
+    page_size: int = 25,
+    map: Optional[str] = None,
+    tournament_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    location: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    engine = DropAnalyticsEngine(db)
+    return engine.get_history(page=page, page_size=page_size, map_name=map, tournament_id=tournament_id, team_id=team_id, location=location)
 
 # ==========================================================================
 # MAP INTEL ENDPOINTS
