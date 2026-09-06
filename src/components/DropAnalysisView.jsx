@@ -201,60 +201,60 @@ export default function DropAnalysisView({ season, onNavigateToMatch }) {
       </div>
 
       {/* ── Macro KPI Summary Cards ────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 my-4">
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">ANALYZED MATCHES</span>
-          <div className="text-2xl font-black text-white mt-1">{summary?.total_matches || 0}</div>
-          <span className="text-[11px] text-emerald-400 font-medium">100% Verified</span>
+      <div className="analytics-kpi-deck">
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">ANALYZED MATCHES</span>
+          <div className="analytics-kpi-value">{summary?.total_matches || 0}</div>
+          <span className="analytics-kpi-sub text-emerald-400">100% Verified</span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">TEAMS ANALYZED</span>
-          <div className="text-2xl font-black text-white mt-1">{summary?.total_teams || 0}</div>
-          <span className="text-[11px] text-orange-400 font-medium">Pro Rosters</span>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">TEAMS ANALYZED</span>
+          <div className="analytics-kpi-value text-orange-400">{summary?.total_teams || 0}</div>
+          <span className="analytics-kpi-sub text-orange-400">Pro Rosters</span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">MAPS MONITORED</span>
-          <div className="text-2xl font-black text-white mt-1">{summary?.total_maps || 3}</div>
-          <span className="text-[11px] text-blue-400 font-medium">Erangel • Miramar • Rondo</span>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">MAPS MONITORED</span>
+          <div className="analytics-kpi-value text-blue-400">{summary?.total_maps || 3}</div>
+          <span className="analytics-kpi-sub text-blue-400">Erangel • Miramar • Rondo</span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">RECORDED DROPS</span>
-          <div className="text-2xl font-black text-white mt-1">{summary?.total_drops || 0}</div>
-          <span className="text-[11px] text-amber-400 font-medium">Tactical Coordinates</span>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">RECORDED DROPS</span>
+          <div className="analytics-kpi-value text-amber-400">{summary?.total_drops || 0}</div>
+          <span className="analytics-kpi-sub text-amber-400">Tactical Coordinates</span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">MOST POPULAR DROP</span>
-          <div className="text-lg font-black text-orange-400 truncate mt-1" title={summary?.most_popular_drop?.location}>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">MOST POPULAR DROP</span>
+          <div className="analytics-kpi-value text-orange-400 truncate text-lg" title={summary?.most_popular_drop?.location}>
             {summary?.most_popular_drop?.location || 'N/A'}
           </div>
-          <span className="text-[11px] text-gray-300 font-medium">
+          <span className="analytics-kpi-sub text-gray-300">
             {summary?.most_popular_drop?.count || 0} drops ({summary?.most_popular_drop?.percentage || 0}%)
           </span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">MOST CONTESTED</span>
-          <div className="text-lg font-black text-red-400 truncate mt-1" title={summary?.most_contested_drop?.location}>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">MOST CONTESTED</span>
+          <div className="analytics-kpi-value text-red-400 truncate text-lg" title={summary?.most_contested_drop?.location}>
             {summary?.most_contested_drop?.location || 'N/A'}
           </div>
-          <span className="text-[11px] text-red-300 font-medium">
+          <span className="analytics-kpi-sub text-red-300">
             {summary?.most_contested_drop?.contest_rate || 0}% Contest Rate
           </span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">BEST SUCCESS DROP</span>
-          <div className="text-lg font-black text-emerald-400 truncate mt-1" title={summary?.best_performing_drop?.location}>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">BEST SUCCESS DROP</span>
+          <div className="analytics-kpi-value text-emerald-400 truncate text-lg" title={summary?.best_performing_drop?.location}>
             {summary?.best_performing_drop?.location || 'N/A'}
           </div>
-          <span className="text-[11px] text-emerald-300 font-medium">
+          <span className="analytics-kpi-sub text-emerald-300">
             Avg #{summary?.best_performing_drop?.avg_placement || 0} ({summary?.best_performing_drop?.win_rate || 0}% Win)
           </span>
         </div>
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col justify-between">
-          <span className="text-[10px] font-bold tracking-wider uppercase text-gray-400">TOP CONSISTENCY</span>
-          <div className="text-sm font-black text-purple-300 truncate mt-1" title={summary?.most_consistent_team_drop?.team_name}>
+        <div className="analytics-kpi-card">
+          <span className="analytics-kpi-label">TOP CONSISTENCY</span>
+          <div className="analytics-kpi-value text-purple-300 truncate text-base" title={summary?.most_consistent_team_drop?.team_name}>
             {summary?.most_consistent_team_drop?.team_name || 'N/A'}
           </div>
-          <span className="text-[11px] text-purple-200 font-medium truncate">
+          <span className="analytics-kpi-sub text-purple-200 truncate">
             {summary?.most_consistent_team_drop?.location} ({summary?.most_consistent_team_drop?.consistency_pct}%)
           </span>
         </div>

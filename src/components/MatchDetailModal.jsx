@@ -103,11 +103,11 @@ export default function MatchDetailModal({ matchId, onClose }) {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 self-start sm:self-center">
+                <div className="flex items-center gap-2 self-start sm:self-center" style={{ marginRight: '3rem' }}>
                   <button
                     type="button"
                     onClick={handleOpenMap}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider text-orange-400 bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 transition-all"
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider text-orange-400 bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 transition-all cursor-pointer"
                   >
                     <Map size={14} /> Open Tactical Map
                   </button>
