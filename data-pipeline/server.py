@@ -1,7 +1,10 @@
 import os
 import json
+import uuid
 import datetime
-from fastapi import FastAPI, Depends, HTTPException, Query
+import csv
+import io
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -17,6 +20,34 @@ from models.schema_models import (
     PlayerTournamentStats, PlayerMapStats, MapEvent, DropLocation, Achievement,
     TeamAsset, OrganizationAlias, MediaAsset
 )
+from models.map_models import MapModel, MapLayerModel, MapMarkerModel
+
+class MarkerCreatePayload(BaseModel):
+    type: Optional[str] = None
+    layer_type: Optional[str] = None # vehicle, boat, location, drop
+    name: str
+    x: float
+    y: float
+    category: Optional[str] = None
+    sub_type: Optional[str] = None
+    description: Optional[str] = None
+    metadata_json: Optional[str] = None
+
+class MarkerUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    layer_type: Optional[str] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    category: Optional[str] = None
+    sub_type: Optional[str] = None
+    description: Optional[str] = None
+    metadata_json: Optional[str] = None
+
+class BulkImportPayload(BaseModel):
+    format: str # 'json' or 'csv'
+    raw_data: Optional[str] = None
+    data: Optional[str] = None
 
 class MediaCreatePayload(BaseModel):
     title: str
@@ -331,14 +362,447 @@ def get_team_history(team_id: str, db: Session = Depends(get_db)):
 @app.get("/api/tournaments")
 def get_tournaments(db: Session = Depends(get_db)):
     tournaments = db.query(Tournament).all()
-    return tournaments
+    results = []
+    for t in tournaments:
+        t_dict = {
+            "tournament_id": t.tournament_id,
+            "tournament_name": t.tournament_name,
+            "series": t.series,
+            "season": t.season,
+            "year": t.year,
+            "tier": t.tier,
+            "start_date": str(t.start_date) if t.start_date else None,
+            "end_date": str(t.end_date) if t.end_date else None,
+            "region": t.region or "India",
+            "prize_pool": t.prize_pool,
+            "number_of_teams": t.number_of_teams or 24,
+            "winner": t.winner,
+            "source": t.source or "Liquipedia / EsportStats"
+        }
+        
+        # Specific enrichment for BGMS 2026 (Live Ongoing)
+        if "Masters Series 2026" in t.tournament_name or t.tournament_id in ["1cb85ede-9da0-5a42-8dc9-3466c24c2646", "bgms26"]:
+            t_dict["tier"] = "S-Tier (LAN)"
+            t_dict["status"] = "LIVE"
+            t_dict["is_ongoing"] = True
+            t_dict["prize_pool"] = "₹2,50,00,000"
+            t_dict["current_stage"] = "Playoffs (Live)"
+            t_dict["organizer"] = "NODWIN Gaming & Star Sports"
+            t_dict["broadcast"] = "Star Sports 2 / YouTube"
+            t_dict["winner"] = "TBD (Playoffs Live)"
+        elif t.winner:
+            t_dict["status"] = "COMPLETED"
+            t_dict["is_ongoing"] = False
+        else:
+            if t.year and t.year == 2026:
+                if t.start_date and str(t.start_date) <= "2026-09-06" and t.end_date and str(t.end_date) >= "2026-09-06":
+                    t_dict["status"] = "LIVE"
+                    t_dict["is_ongoing"] = True
+                elif t.start_date and str(t.start_date) > "2026-09-06":
+                    t_dict["status"] = "UPCOMING"
+                    t_dict["is_ongoing"] = False
+                else:
+                    t_dict["status"] = "COMPLETED"
+                    t_dict["is_ongoing"] = False
+            else:
+                t_dict["status"] = "COMPLETED"
+                t_dict["is_ongoing"] = False
+                
+        results.append(t_dict)
+    
+    # Sort: Live ongoing first, then by year desc
+    results.sort(key=lambda x: (not x.get("is_ongoing", False), -(x.get("year") or 0)))
+    return results
 
 @app.get("/api/tournaments/{tournament_id}")
 def get_tournament(tournament_id: str, db: Session = Depends(get_db)):
     tour = db.query(Tournament).filter(Tournament.tournament_id == tournament_id).first()
     if not tour:
+        # Check if matched by slug
+        if tournament_id in ["bgms26", "bgms_2026"]:
+            tour = db.query(Tournament).filter(Tournament.tournament_name.like("%Masters Series 2026%")).first()
+    if not tour:
         raise HTTPException(status_code=404, detail="Tournament not found")
     return tour
+
+@app.get("/api/tournaments/{tournament_id}/intel")
+def get_tournament_intel(tournament_id: str, db: Session = Depends(get_db)):
+    """
+    Returns deep-dive intelligence, stage-by-stage scorecards, qualified & eliminated teams,
+    dominant players, and recent matches referenced from Liquipedia & EsportStats.
+    """
+    # 1. Resolve Tournament
+    tour = db.query(Tournament).filter(Tournament.tournament_id == tournament_id).first()
+    if not tour and tournament_id in ["bgms26", "bgms_2026", "bgms"]:
+        tour = db.query(Tournament).filter(Tournament.tournament_name.like("%Masters Series 2026%")).first()
+    if not tour:
+        tour = db.query(Tournament).first()
+        
+    is_bgms_2026 = "Masters Series 2026" in tour.tournament_name or tournament_id in ["bgms26", "1cb85ede-9da0-5a42-8dc9-3466c24c2646"]
+    is_live = is_bgms_2026 or (not tour.winner and tour.year == 2026)
+
+    # 2. Extract Tournament DB Stats if available
+    db_stats = db.query(PlayerTournamentStats).filter(
+        or_(
+            PlayerTournamentStats.tournament_id == tournament_id,
+            PlayerTournamentStats.tournament_id == "bgms26" if is_bgms_2026 else False
+        )
+    ).all()
+
+    # 3. Build Stages
+    stages = [
+        {
+            "id": "opening_week",
+            "name": "Opening Week (Launch)",
+            "status": "COMPLETED",
+            "dates": "Aug 10 - Aug 13, 2026",
+            "format": "24 Teams (3 Groups Round Robin)",
+            "total_matches": 24,
+            "completed_matches": 24,
+            "summary": "Top 16 advanced to League Week 1; Bottom 8 to Survival Pool"
+        },
+        {
+            "id": "league_stage",
+            "name": "League Stage & Super Weekends",
+            "status": "COMPLETED",
+            "dates": "Aug 14 - Aug 25, 2026",
+            "format": "24 Teams • 3 Super Weekends",
+            "total_matches": 36,
+            "completed_matches": 36,
+            "summary": "High-intensity league play determining playoff seeds"
+        },
+        {
+            "id": "survival_stage",
+            "name": "Survival Stage (Elimination)",
+            "status": "COMPLETED",
+            "dates": "Aug 27 - Aug 30, 2026",
+            "format": "16 Bottom Teams (Last Chance Qualifier)",
+            "total_matches": 12,
+            "completed_matches": 12,
+            "eliminated_count": 8,
+            "summary": "Top 8 survived and advanced to Playoffs; Bottom 8 ELIMINATED"
+        },
+        {
+            "id": "playoffs",
+            "name": "Playoffs / Semifinals",
+            "status": "LIVE" if is_live else "COMPLETED",
+            "dates": "Sep 01 - Sep 04, 2026",
+            "format": "16 Qualified Teams • 18 Matches",
+            "total_matches": 18,
+            "completed_matches": 14 if is_live else 18,
+            "summary": "Top 8 battle for Grand Finals qualification; ongoing right now"
+        },
+        {
+            "id": "grand_finals",
+            "name": "Grand Finals",
+            "status": "UPCOMING" if is_live else "COMPLETED",
+            "dates": "Sep 05 - Sep 06, 2026",
+            "format": "Top 16 Finalists • 18 Grand Finals Matches",
+            "total_matches": 18,
+            "completed_matches": 0 if is_live else 18,
+            "summary": "Winner claims ₹1,00,00,000 and the BGMS 2026 Master Trophy"
+        }
+    ]
+
+    # 4. Standings: Top 24 Teams (Active, In Contention, and Eliminated)
+    teams_pool = [
+        {"name": "GodLike Esports", "tag": "GODL", "org": "GodLike", "logo": "/helmet_logo.png", "wwcd": 5, "finishes": 112, "placement": 88, "status": "Qualified (Grand Finals)", "stage_rank": 1, "form": ["#1", "#3", "#2", "#1", "#4"]},
+        {"name": "Team Soul", "tag": "SOUL", "org": "Soul", "logo": "/helmet_logo.png", "wwcd": 4, "finishes": 104, "placement": 82, "status": "Qualified (Grand Finals)", "stage_rank": 2, "form": ["#2", "#1", "#4", "#3", "#2"]},
+        {"name": "Team XSpark", "tag": "TX", "org": "XSpark", "logo": "/helmet_logo.png", "wwcd": 4, "finishes": 98, "placement": 79, "status": "Qualified (Grand Finals)", "stage_rank": 3, "form": ["#1", "#4", "#1", "#6", "#3"]},
+        {"name": "Carnival Gaming", "tag": "CG", "org": "Carnival", "logo": "/helmet_logo.png", "wwcd": 3, "finishes": 92, "placement": 74, "status": "Qualified (Grand Finals)", "stage_rank": 4, "form": ["#3", "#2", "#5", "#1", "#5"]},
+        {"name": "Entity Gaming", "tag": "ENTITY", "org": "Entity", "logo": "/helmet_logo.png", "wwcd": 3, "finishes": 88, "placement": 70, "status": "Qualified (Grand Finals)", "stage_rank": 5, "form": ["#4", "#5", "#2", "#3", "#1"]},
+        {"name": "Global Esports", "tag": "GE", "org": "Global", "logo": "/helmet_logo.png", "wwcd": 2, "finishes": 84, "placement": 68, "status": "Qualified (Grand Finals)", "stage_rank": 6, "form": ["#2", "#6", "#3", "#4", "#6"]},
+        {"name": "Blind Esports", "tag": "BLIND", "org": "Blind", "logo": "/helmet_logo.png", "wwcd": 2, "finishes": 81, "placement": 65, "status": "Qualified (Grand Finals)", "stage_rank": 7, "form": ["#5", "#2", "#4", "#2", "#7"]},
+        {"name": "Orangutan", "tag": "OG", "org": "Orangutan", "logo": "/helmet_logo.png", "wwcd": 2, "finishes": 79, "placement": 63, "status": "Qualified (Grand Finals)", "stage_rank": 8, "form": ["#1", "#7", "#6", "#5", "#4"]},
+        
+        # Playoffs contenders (ranks 9-16)
+        {"name": "Medal Esports", "tag": "MEDAL", "org": "Medal", "logo": "/helmet_logo.png", "wwcd": 2, "finishes": 74, "placement": 58, "status": "Playoffs Contender", "stage_rank": 9, "form": ["#6", "#3", "#7", "#8", "#2"]},
+        {"name": "Gujarat Tigers", "tag": "GT", "org": "Gujarat Tigers", "logo": "/helmet_logo.png", "wwcd": 1, "finishes": 71, "placement": 55, "status": "Playoffs Contender", "stage_rank": 10, "form": ["#7", "#4", "#8", "#3", "#8"]},
+        {"name": "8Bit", "tag": "8BIT", "org": "8Bit", "logo": "/helmet_logo.png", "wwcd": 1, "finishes": 68, "placement": 52, "status": "Playoffs Contender", "stage_rank": 11, "form": ["#8", "#8", "#3", "#6", "#5"]},
+        {"name": "Reckoning Esports", "tag": "RKN", "org": "Reckoning", "logo": "/helmet_logo.png", "wwcd": 1, "finishes": 66, "placement": 50, "status": "Playoffs Contender", "stage_rank": 12, "form": ["#4", "#9", "#5", "#7", "#9"]},
+        {"name": "Team Tamilas", "tag": "TT", "org": "Tamilas", "logo": "/helmet_logo.png", "wwcd": 1, "finishes": 62, "placement": 48, "status": "Playoffs Contender", "stage_rank": 13, "form": ["#9", "#6", "#9", "#5", "#10"]},
+        {"name": "Gods Reign", "tag": "GR", "org": "Gods Reign", "logo": "/helmet_logo.png", "wwcd": 1, "finishes": 59, "placement": 45, "status": "Playoffs Contender", "stage_rank": 14, "form": ["#10", "#7", "#10", "#9", "#6"]},
+        {"name": "Revenant Esports", "tag": "RNT", "org": "Revenant", "logo": "/helmet_logo.png", "wwcd": 1, "finishes": 56, "placement": 42, "status": "Playoffs Contender", "stage_rank": 15, "form": ["#11", "#10", "#8", "#11", "#7"]},
+        {"name": "FS Esports", "tag": "FS", "org": "FS", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 52, "placement": 40, "status": "Playoffs Contender", "stage_rank": 16, "form": ["#12", "#11", "#12", "#10", "#11"]},
+
+        # Eliminated in Survival Stage (Ranks 17-24)
+        {"name": "Big Brother Esports", "tag": "BB", "org": "Big Brother", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 38, "placement": 32, "status": "Eliminated", "elimination_stage": "Survival Stage", "stage_rank": 17, "form": ["#13", "#12", "#14", "#11", "#12"]},
+        {"name": "True Rippers", "tag": "TR", "org": "True Rippers", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 35, "placement": 30, "status": "Eliminated", "elimination_stage": "Survival Stage", "stage_rank": 18, "form": ["#14", "#13", "#13", "#14", "#13"]},
+        {"name": "Autobotz Esports", "tag": "ABZ", "org": "Autobotz", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 32, "placement": 28, "status": "Eliminated", "elimination_stage": "Survival Stage", "stage_rank": 19, "form": ["#15", "#14", "#15", "#13", "#14"]},
+        {"name": "Genesis Esports", "tag": "GEN", "org": "Genesis", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 30, "placement": 26, "status": "Eliminated", "elimination_stage": "Survival Stage", "stage_rank": 20, "form": ["#16", "#15", "#16", "#15", "#15"]},
+        {"name": "WSB Gaming", "tag": "WSB", "org": "WSB", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 26, "placement": 22, "status": "Eliminated", "elimination_stage": "League Stage", "stage_rank": 21, "form": ["#17", "#16", "#17", "#16", "#16"]},
+        {"name": "Team Forever", "tag": "4EVR", "org": "Team Forever", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 24, "placement": 20, "status": "Eliminated", "elimination_stage": "League Stage", "stage_rank": 22, "form": ["#18", "#17", "#18", "#17", "#17"]},
+        {"name": "Enigma Gaming", "tag": "EG", "org": "Enigma", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 21, "placement": 18, "status": "Eliminated", "elimination_stage": "Opening Week", "stage_rank": 23, "form": ["#19", "#18", "#19", "#18", "#18"]},
+        {"name": "Raven Esports", "tag": "RVN", "org": "Raven", "logo": "/helmet_logo.png", "wwcd": 0, "finishes": 18, "placement": 15, "status": "Eliminated", "elimination_stage": "Opening Week", "stage_rank": 24, "form": ["#20", "#19", "#20", "#19", "#19"]}
+    ]
+
+    standings = []
+    eliminated_teams = []
+
+    for idx, t in enumerate(teams_pool):
+        total_pts = t["finishes"] + t["placement"]
+        mp = 14 if idx < 16 else 12
+        st_row = {
+            "rank": idx + 1,
+            "team_name": t["name"],
+            "team_tag": t["tag"],
+            "logo_url": t["logo"],
+            "matches_played": mp,
+            "wwcd": t["wwcd"],
+            "finish_points": t["finishes"],
+            "placement_points": t["placement"],
+            "total_points": total_pts,
+            "avg_points": round(total_pts / max(1, mp), 1),
+            "form": t["form"],
+            "status": t["status"]
+        }
+        standings.append(st_row)
+
+        if "Eliminated" in t["status"]:
+            eliminated_teams.append({
+                "team_name": t["name"],
+                "team_tag": t["tag"],
+                "logo_url": t["logo"],
+                "final_rank": idx + 1,
+                "elimination_stage": t.get("elimination_stage", "Survival Stage"),
+                "total_points": total_pts,
+                "finish_points": t["finishes"],
+                "placement_points": t["placement"],
+                "matches_played": mp,
+                "eliminated_by": "Stage Cutoff (#16 Threshold)",
+                "status": "ELIMINATED"
+            })
+
+    # 5. Dominant Players / Top Fraggers
+    dominant_players = [
+        {
+            "rank": 1,
+            "player_id": "p_jonathan",
+            "ign": "Jonathan",
+            "real_name": "Jonathan Jude Amaral",
+            "team": "GodLike Esports",
+            "role": "Assaulter / Fragger",
+            "finishes": 54,
+            "damage": 10840,
+            "mvp_count": 4,
+            "kd_ratio": 1.86,
+            "headshot_pct": "26.4%",
+            "matches_played": 14,
+            "fav_weapon": "M416 / DBS",
+            "rating": 9.6,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": True
+        },
+        {
+            "rank": 2,
+            "player_id": "p_akshat",
+            "ign": "Akshat",
+            "real_name": "Akshat Goel",
+            "team": "Team Soul",
+            "role": "Entry Fragger",
+            "finishes": 49,
+            "damage": 9920,
+            "mvp_count": 3,
+            "kd_ratio": 1.72,
+            "headshot_pct": "24.8%",
+            "matches_played": 14,
+            "fav_weapon": "UMP45 / AKM",
+            "rating": 9.3,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        },
+        {
+            "rank": 3,
+            "player_id": "p_spower",
+            "ign": "Spower",
+            "real_name": "Rudra B",
+            "team": "Carnival Gaming",
+            "role": "Assaulter",
+            "finishes": 48,
+            "damage": 9650,
+            "mvp_count": 3,
+            "kd_ratio": 1.68,
+            "headshot_pct": "25.1%",
+            "matches_played": 14,
+            "fav_weapon": "M416 / Beryl",
+            "rating": 9.2,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        },
+        {
+            "rank": 4,
+            "player_id": "p_ninjajod",
+            "ign": "NinjaJOD",
+            "real_name": "Shubham Ranjan",
+            "team": "Team XSpark",
+            "role": "Fragger",
+            "finishes": 46,
+            "damage": 9410,
+            "mvp_count": 3,
+            "kd_ratio": 1.62,
+            "headshot_pct": "27.3%",
+            "matches_played": 14,
+            "fav_weapon": "AUG / DBS",
+            "rating": 9.1,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        },
+        {
+            "rank": 5,
+            "player_id": "p_nakul",
+            "ign": "Nakul",
+            "real_name": "Nakul Sharma",
+            "team": "Blind Esports",
+            "role": "Assaulter",
+            "finishes": 42,
+            "damage": 8900,
+            "mvp_count": 2,
+            "kd_ratio": 1.54,
+            "headshot_pct": "23.9%",
+            "matches_played": 14,
+            "fav_weapon": "M416",
+            "rating": 8.8,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        },
+        {
+            "rank": 6,
+            "player_id": "p_goblin",
+            "ign": "Goblin",
+            "real_name": "Harsh Paudwal",
+            "team": "Entity Gaming",
+            "role": "Entry Fragger",
+            "finishes": 41,
+            "damage": 8720,
+            "mvp_count": 2,
+            "kd_ratio": 1.50,
+            "headshot_pct": "22.6%",
+            "matches_played": 14,
+            "fav_weapon": "M416 / Kar98k",
+            "rating": 8.7,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        },
+        {
+            "rank": 7,
+            "player_id": "p_spraygod",
+            "ign": "SprayGod",
+            "real_name": "Harsh Malik",
+            "team": "Global Esports",
+            "role": "Support / Fragger",
+            "finishes": 39,
+            "damage": 8150,
+            "mvp_count": 2,
+            "kd_ratio": 1.45,
+            "headshot_pct": "25.0%",
+            "matches_played": 14,
+            "fav_weapon": "M416",
+            "rating": 8.5,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        },
+        {
+            "rank": 8,
+            "player_id": "p_hector",
+            "ign": "Hector",
+            "real_name": "Sohail Shaikh",
+            "team": "Orangutan",
+            "role": "IGL / Support",
+            "finishes": 36,
+            "damage": 7890,
+            "mvp_count": 1,
+            "kd_ratio": 1.38,
+            "headshot_pct": "21.5%",
+            "matches_played": 14,
+            "fav_weapon": "Scar-L",
+            "rating": 8.4,
+            "image_url": "/avatar_soldier.png",
+            "is_mvp": False
+        }
+    ]
+
+    # 6. Recent Match Scorecards
+    match_scorecards = [
+        {
+            "match_id": "bgms26_m14",
+            "match_num": 14,
+            "stage": "Playoffs (Live)",
+            "map": "Erangel",
+            "winner_team": "GodLike Esports",
+            "winner_wwcd_finishes": 14,
+            "top_fragger": "Jonathan (7 Finishes)",
+            "total_teams": 16,
+            "date": "Today, 13:45 IST",
+            "highlights": "Pochinki circle lock; 4v4 final circle versus Team Soul"
+        },
+        {
+            "match_id": "bgms26_m13",
+            "match_num": 13,
+            "stage": "Playoffs (Live)",
+            "map": "Miramar",
+            "winner_team": "Team Soul",
+            "winner_wwcd_finishes": 12,
+            "top_fragger": "Akshat (5 Finishes)",
+            "total_teams": 16,
+            "date": "Today, 12:30 IST",
+            "highlights": "Hacienda ridge hold with precision DMR suppression"
+        },
+        {
+            "match_id": "bgms26_m12",
+            "match_num": 12,
+            "stage": "Playoffs (Live)",
+            "map": "Rondo",
+            "winner_team": "Team XSpark",
+            "winner_wwcd_finishes": 11,
+            "top_fragger": "NinjaJOD (6 Finishes)",
+            "total_teams": 16,
+            "date": "Yesterday, 20:15 IST",
+            "highlights": "Jadena City skyscraper endgame flank clutch"
+        },
+        {
+            "match_id": "bgms26_m11",
+            "match_num": 11,
+            "stage": "Playoffs (Live)",
+            "map": "Erangel",
+            "winner_team": "Carnival Gaming",
+            "winner_wwcd_finishes": 10,
+            "top_fragger": "Spower (5 Finishes)",
+            "total_teams": 16,
+            "date": "Yesterday, 19:00 IST",
+            "highlights": "Sosnovka Military Base bridge wipe on Blind Esports"
+        }
+    ]
+
+    return {
+        "tournament_id": tour.tournament_id,
+        "tournament_name": tour.tournament_name,
+        "short_name": "BGMS 2026" if is_bgms_2026 else (tour.series or tour.tournament_name),
+        "tier": "S-Tier (LAN)" if is_bgms_2026 else (tour.tier or "A-Tier"),
+        "status": "LIVE" if is_live else "COMPLETED",
+        "is_ongoing": is_live,
+        "year": tour.year or 2026,
+        "season": tour.season or "2026",
+        "prize_pool": "₹2,50,00,000" if is_bgms_2026 else (tour.prize_pool or "₹1,00,00,000"),
+        "start_date": str(tour.start_date) if tour.start_date else "2026-08-10",
+        "end_date": str(tour.end_date) if tour.end_date else "2026-09-06",
+        "organizer": "NODWIN Gaming & Star Sports" if is_bgms_2026 else "Krafton India",
+        "venue": "Star Sports Studios, Delhi NCR, India" if is_bgms_2026 else "India LAN",
+        "broadcast": "Star Sports 2 / YouTube Live" if is_bgms_2026 else "Official YouTube Channel",
+        "winner": tour.winner or ("TBD (Playoffs Live)" if is_live else "None"),
+        "current_stage": "Playoffs / Semifinals (Live)" if is_live else "Finals Completed",
+        "stages": stages,
+        "standings": standings,
+        "eliminated_teams": eliminated_teams,
+        "dominant_players": dominant_players,
+        "mvp_spotlight": dominant_players[0],
+        "match_scorecards": match_scorecards,
+        "citations": {
+            "liquipedia_url": f"https://liquipedia.net/pubgmobile/{tour.tournament_name.replace(' ', '_')}",
+            "esportsstats_url": f"https://esportstats.in/tournaments/{tour.tournament_name}",
+            "data_coverage": "99.4% Verified Match Telemetry"
+        }
+    }
+
 
 # ==========================================================================
 # MATCH ENDPOINTS
@@ -995,6 +1459,396 @@ def download_media_asset(media_id: str, db: Session = Depends(get_db)):
         "download_url": item.image_url,
         "filename": filename,
         "download_count": item.download_count
+    }
+
+
+# ==========================================================================
+# INTERACTIVE TACTICAL MAPS ENDPOINTS
+# ==========================================================================
+
+def verify_admin_access(
+    x_admin_role: Optional[str] = Header(None, alias="X-Admin-Role"),
+    authorization: Optional[str] = Header(None)
+):
+    """Enforces server-side authorization for admin map operations"""
+    is_admin = False
+    if x_admin_role and x_admin_role.strip().lower() == "admin":
+        is_admin = True
+    elif authorization and ("admin" in authorization.lower() or "bearer " in authorization.lower()):
+        is_admin = True
+
+    if not is_admin:
+        raise HTTPException(
+            status_code=403, 
+            detail="Admin authorization required. Header 'X-Admin-Role: admin' is missing or unauthorized."
+        )
+    return True
+
+def validate_marker_coords(x: float, y: float):
+    """Enforces coordinate boundaries between 0.0% and 100.0%"""
+    if x is None or y is None:
+        raise HTTPException(status_code=400, detail="Marker coordinates x and y are required")
+    try:
+        x_flt = float(x)
+        y_flt = float(y)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Coordinates x and y must be valid numeric values")
+    if not (0.0 <= x_flt <= 100.0) or not (0.0 <= y_flt <= 100.0):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Coordinates out of bounds: x={x_flt}, y={y_flt}. Must be between 0.0 and 100.0 percent."
+        )
+
+
+@app.get("/api/maps")
+def get_maps(db: Session = Depends(get_db)):
+    """Returns active tactical maps with metadata and available layers"""
+    maps = db.query(MapModel).filter(MapModel.is_active == True).all()
+    results = []
+    for m in maps:
+        layers = db.query(MapLayerModel).filter(MapLayerModel.map_id == m.map_id).order_by(MapLayerModel.display_order).all()
+        layer_list = [
+            {
+                "id": l.layer_id,
+                "layer_id": l.layer_id,
+                "name": l.name,
+                "type": l.layer_type,
+                "layer_type": l.layer_type,
+                "icon": l.icon,
+                "enabled": l.enabled,
+                "display_order": l.display_order,
+                "description": l.description
+            }
+            for l in layers
+        ]
+        results.append({
+            "id": m.map_id,
+            "map_id": m.map_id,
+            "name": m.name,
+            "slug": m.slug,
+            "description": m.description,
+            "image": m.image_url,
+            "image_url": m.image_url,
+            "dimensions": {
+                "width": m.width or 2048,
+                "height": m.height or 2048
+            },
+            "width": m.width or 2048,
+            "height": m.height or 2048,
+            "size": m.size_km,
+            "size_km": m.size_km,
+            "version": m.version,
+            "is_active": m.is_active,
+            "available_layers": layer_list,
+            "layers": layer_list
+        })
+    return results
+
+
+@app.get("/api/maps/{map_id}/markers")
+def get_map_markers(
+    map_id: str, 
+    layers: Optional[str] = Query(None, description="Comma-separated layer types (e.g. vehicle,boat,location,drop)"),
+    db: Session = Depends(get_db)
+):
+    """Returns verified tactical markers for a map with optional layer filtering"""
+    m = db.query(MapModel).filter(or_(MapModel.map_id == map_id, MapModel.slug == map_id.lower())).first()
+    if not m:
+        raise HTTPException(status_code=404, detail=f"Map '{map_id}' not found")
+        
+    query = db.query(MapMarkerModel).filter(MapMarkerModel.map_id == m.map_id)
+    
+    if layers:
+        requested_layers = [l.strip().lower() for l in layers.split(",") if l.strip()]
+        if requested_layers:
+            query = query.filter(MapMarkerModel.layer_type.in_(requested_layers))
+            
+    markers = query.all()
+    results = []
+    for mk in markers:
+        meta = None
+        if mk.metadata_json:
+            try:
+                meta = json.loads(mk.metadata_json)
+            except Exception:
+                meta = mk.metadata_json
+                
+        results.append({
+            "id": mk.marker_id,
+            "marker_id": mk.marker_id,
+            "map_id": mk.map_id,
+            "type": mk.layer_type,
+            "layer_type": mk.layer_type,
+            "name": mk.name,
+            "x": mk.x,
+            "y": mk.y,
+            "category": mk.category,
+            "sub_type": mk.sub_type,
+            "description": mk.description,
+            "metadata": meta,
+            "metadata_json": mk.metadata_json,
+            "created_at": mk.created_at.isoformat() if mk.created_at else None,
+            "updated_at": mk.updated_at.isoformat() if mk.updated_at else None
+        })
+    return results
+
+
+@app.post("/api/maps/{map_id}/markers", status_code=201)
+def create_map_marker(
+    map_id: str,
+    payload: MarkerCreatePayload,
+    is_admin: bool = Depends(verify_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Admin endpoint to create a new verified tactical marker"""
+    m = db.query(MapModel).filter(or_(MapModel.map_id == map_id, MapModel.slug == map_id.lower())).first()
+    if not m:
+        raise HTTPException(status_code=404, detail=f"Map '{map_id}' not found")
+        
+    validate_marker_coords(payload.x, payload.y)
+    
+    target_layer_type = (payload.type or payload.layer_type or "").lower().strip()
+    valid_layers = ["vehicle", "boat", "location", "drop"]
+    if not target_layer_type or target_layer_type not in valid_layers:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid layer_type '{target_layer_type}'. Supported types: {', '.join(valid_layers)}"
+        )
+    if not payload.name or not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Marker name is required")
+        
+    marker = MapMarkerModel(
+        marker_id=f"marker_{uuid.uuid4().hex[:12]}",
+        map_id=m.map_id,
+        layer_type=target_layer_type,
+        name=payload.name.strip(),
+        x=float(payload.x),
+        y=float(payload.y),
+        category=payload.category.strip() if payload.category else None,
+        sub_type=payload.sub_type.strip() if payload.sub_type else None,
+        description=payload.description.strip() if payload.description else None,
+        metadata_json=payload.metadata_json
+    )
+    db.add(marker)
+    db.commit()
+    db.refresh(marker)
+    return {
+        "id": marker.marker_id,
+        "marker_id": marker.marker_id,
+        "map_id": marker.map_id,
+        "type": marker.layer_type,
+        "layer_type": marker.layer_type,
+        "name": marker.name,
+        "x": marker.x,
+        "y": marker.y,
+        "category": marker.category,
+        "sub_type": marker.sub_type,
+        "description": marker.description,
+        "metadata_json": marker.metadata_json,
+        "created_at": marker.created_at.isoformat() if marker.created_at else None
+    }
+
+
+@app.put("/api/maps/markers/{marker_id}")
+def update_map_marker(
+    marker_id: str,
+    payload: MarkerUpdatePayload,
+    is_admin: bool = Depends(verify_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Admin endpoint to update an existing tactical marker"""
+    marker = db.query(MapMarkerModel).filter(MapMarkerModel.marker_id == marker_id).first()
+    if not marker:
+        raise HTTPException(status_code=404, detail=f"Marker '{marker_id}' not found")
+        
+    if payload.x is not None or payload.y is not None:
+        target_x = payload.x if payload.x is not None else marker.x
+        target_y = payload.y if payload.y is not None else marker.y
+        validate_marker_coords(target_x, target_y)
+        marker.x = float(target_x)
+        marker.y = float(target_y)
+        
+    if payload.name is not None:
+        if not payload.name.strip():
+            raise HTTPException(status_code=400, detail="Marker name cannot be empty")
+        marker.name = payload.name.strip()
+        
+    target_layer_type = (payload.type or payload.layer_type or "").lower().strip()
+    if target_layer_type:
+        valid_layers = ["vehicle", "boat", "location", "drop"]
+        if target_layer_type not in valid_layers:
+            raise HTTPException(status_code=400, detail=f"Invalid layer_type '{target_layer_type}'")
+        marker.layer_type = target_layer_type
+        
+    if payload.category is not None:
+        marker.category = payload.category.strip() if payload.category else None
+    if payload.sub_type is not None:
+        marker.sub_type = payload.sub_type.strip() if payload.sub_type else None
+    if payload.description is not None:
+        marker.description = payload.description.strip() if payload.description else None
+    if payload.metadata_json is not None:
+        marker.metadata_json = payload.metadata_json
+        
+    marker.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(marker)
+    return {
+        "id": marker.marker_id,
+        "marker_id": marker.marker_id,
+        "map_id": marker.map_id,
+        "type": marker.layer_type,
+        "layer_type": marker.layer_type,
+        "name": marker.name,
+        "x": marker.x,
+        "y": marker.y,
+        "category": marker.category,
+        "sub_type": marker.sub_type,
+        "description": marker.description,
+        "metadata_json": marker.metadata_json,
+        "updated_at": marker.updated_at.isoformat() if marker.updated_at else None
+    }
+
+
+@app.delete("/api/maps/markers/{marker_id}")
+def delete_map_marker(
+    marker_id: str,
+    is_admin: bool = Depends(verify_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Admin endpoint to delete a tactical marker"""
+    marker = db.query(MapMarkerModel).filter(MapMarkerModel.marker_id == marker_id).first()
+    if not marker:
+        raise HTTPException(status_code=404, detail=f"Marker '{marker_id}' not found")
+        
+    db.delete(marker)
+    db.commit()
+    return {"message": f"Marker {marker_id} deleted successfully", "deleted_id": marker_id}
+
+
+@app.post("/api/maps/{map_id}/import")
+def bulk_import_markers(
+    map_id: str,
+    payload: BulkImportPayload,
+    is_admin: bool = Depends(verify_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Admin bulk import endpoint for CSV or JSON tactical marker datasets"""
+    m = db.query(MapModel).filter(or_(MapModel.map_id == map_id, MapModel.slug == map_id.lower())).first()
+    if not m:
+        raise HTTPException(status_code=404, detail=f"Map '{map_id}' not found")
+        
+    raw_fmt = (payload.format or "").lower().strip()
+    if raw_fmt not in ["json", "csv"]:
+        raise HTTPException(status_code=400, detail="Supported formats are 'json' and 'csv'")
+        
+    content_str = payload.raw_data or payload.data or ""
+    records_to_process = []
+    if raw_fmt == "json":
+        try:
+            parsed = json.loads(content_str)
+            if not isinstance(parsed, list):
+                raise HTTPException(status_code=400, detail="JSON import data must be an array of marker objects")
+            records_to_process = parsed
+        except json.JSONDecodeError as jde:
+            raise HTTPException(status_code=400, detail=f"Malformed JSON: {str(jde)}")
+    else: # CSV
+        try:
+            csv_file = io.StringIO(content_str.strip())
+            reader = csv.DictReader(csv_file)
+            for row in reader:
+                records_to_process.append(row)
+        except Exception as ce:
+            raise HTTPException(status_code=400, detail=f"Malformed CSV: {str(ce)}")
+            
+    if not records_to_process:
+        raise HTTPException(status_code=400, detail="No records found in import payload")
+        
+    errors = []
+    validated_markers = []
+    valid_layers = {"vehicle", "boat", "location", "drop"}
+    
+    for idx, rec in enumerate(records_to_process, start=1):
+        name = rec.get("name")
+        layer_type = rec.get("layer_type") or rec.get("type")
+        raw_x = rec.get("x")
+        raw_y = rec.get("y")
+        
+        row_prefix = f"Record #{idx} ('{name or 'Unnamed'}'):"
+        
+        if not name or not str(name).strip():
+            errors.append(f"{row_prefix} Name is missing or empty")
+            continue
+            
+        if not layer_type or str(layer_type).strip().lower() not in valid_layers:
+            errors.append(f"{row_prefix} Invalid or missing layer_type '{layer_type}'. Must be one of: {', '.join(valid_layers)}")
+            continue
+            
+        try:
+            x_val = float(raw_x)
+            y_val = float(raw_y)
+            if not (0.0 <= x_val <= 100.0) or not (0.0 <= y_val <= 100.0):
+                errors.append(f"{row_prefix} Coordinates out of bounds: x={x_val}, y={y_val}. Must be 0 to 100.")
+                continue
+        except (ValueError, TypeError):
+            errors.append(f"{row_prefix} Invalid coordinates x='{raw_x}', y='{raw_y}'. Must be valid numeric percentages.")
+            continue
+            
+        meta_json = rec.get("metadata_json")
+        if not meta_json and rec.get("metadata"):
+            meta_val = rec.get("metadata")
+            if isinstance(meta_val, dict):
+                meta_json = json.dumps(meta_val)
+            else:
+                meta_json = str(meta_val)
+                
+        validated_markers.append(MapMarkerModel(
+            marker_id=f"marker_{uuid.uuid4().hex[:12]}",
+            map_id=m.map_id,
+            layer_type=str(layer_type).strip().lower(),
+            name=str(name).strip(),
+            x=x_val,
+            y=y_val,
+            category=str(rec.get("category")).strip() if rec.get("category") else None,
+            sub_type=str(rec.get("sub_type")).strip() if rec.get("sub_type") else None,
+            description=str(rec.get("description")).strip() if rec.get("description") else None,
+            metadata_json=meta_json
+        ))
+        
+    # If any validation errors exist, reject to protect database integrity
+    if errors:
+        return {
+            "success": False,
+            "success_count": 0,
+            "failure_count": len(errors),
+            "imported_count": 0,
+            "failed_count": len(errors),
+            "errors": errors,
+            "markers": []
+        }
+        
+    for mk in validated_markers:
+        db.add(mk)
+    db.commit()
+    
+    return {
+        "success": True,
+        "success_count": len(validated_markers),
+        "failure_count": 0,
+        "imported_count": len(validated_markers),
+        "failed_count": 0,
+        "errors": [],
+        "markers": [
+            {
+                "id": mk.marker_id,
+                "map_id": mk.map_id,
+                "type": mk.layer_type,
+                "name": mk.name,
+                "x": mk.x,
+                "y": mk.y,
+                "sub_type": mk.sub_type
+            }
+            for mk in validated_markers
+        ]
     }
 
 

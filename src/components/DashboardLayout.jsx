@@ -16,6 +16,18 @@ import { ShieldAlert } from 'lucide-react';
 export default function DashboardLayout({ user, onLogout }) {
   const [activeTab, setActiveTab] = useState('overview');
   const [season, setSeason] = useState('2026');
+  const [mapIntelInitialMap, setMapIntelInitialMap] = useState(null);
+
+  React.useEffect(() => {
+    const handleOpenMap = (e) => {
+      if (e.detail?.map) {
+        setMapIntelInitialMap(e.detail.map);
+      }
+      setActiveTab('map_intel');
+    };
+    window.addEventListener('open-interactive-map', handleOpenMap);
+    return () => window.removeEventListener('open-interactive-map', handleOpenMap);
+  }, []);
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -37,7 +49,7 @@ export default function DashboardLayout({ user, onLogout }) {
         return <VersusView season={season} />;
       case 'map_intel':
       case 'drop_analysis':
-        return <MapIntelView />;
+        return <MapIntelView initialMap={mapIntelInitialMap} user={user} />;
       case 'achievements':
         return <AchievementsView season={season} />;
 

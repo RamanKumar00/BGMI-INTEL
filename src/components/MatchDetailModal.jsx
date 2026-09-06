@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Trophy, X, Activity, Target } from 'lucide-react';
+import { Trophy, X, Activity, Target, Map } from 'lucide-react';
 import { getMatch } from '../services/api';
 
 export default function MatchDetailModal({ matchId, onClose }) {
@@ -22,6 +22,12 @@ export default function MatchDetailModal({ matchId, onClose }) {
     load();
   }, [matchId]);
 
+  const handleOpenMap = () => {
+    const targetMap = matchData?.map || 'Erangel';
+    window.dispatchEvent(new CustomEvent('open-interactive-map', { detail: { map: targetMap } }));
+    if (onClose) onClose();
+  };
+
   return (
     <div className="db-modal-overlay">
       <div className="db-modal-content" style={{ maxWidth: '600px' }}>
@@ -33,13 +39,23 @@ export default function MatchDetailModal({ matchId, onClose }) {
           <div className="p-8 text-center text-gray-400">Loading match details...</div>
         ) : matchData ? (
           <div>
-            <div className="db-modal-header mb-6">
-              <h2 className="text-2xl font-black italic tracking-wide text-white uppercase" style={{ fontFamily: 'var(--font-heading)' }}>
-                Match #{matchData.match_number || 1} <span style={{ color: 'var(--color-orange-primary)' }}>{matchData.map || 'Erangel'}</span>
-              </h2>
-              <p className="text-sm text-gray-400 mt-1">
-                {matchData.stage} • {matchData.date} • Winner: {matchData.winner_team_id || 'Unknown'}
-              </p>
+            <div className="db-modal-header mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-black italic tracking-wide text-white uppercase" style={{ fontFamily: 'var(--font-heading)' }}>
+                  Match #{matchData.match_number || 1} <span style={{ color: 'var(--color-orange-primary)' }}>{matchData.map || 'Erangel'}</span>
+                </h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  {matchData.stage} • {matchData.date} • Winner: {matchData.winner_team_id || 'Unknown'}
+                </p>
+              </div>
+              <button
+                type="button"
+                id="open-interactive-map-btn"
+                onClick={handleOpenMap}
+                className="tactical-map-jump-btn flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider text-orange-400 bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 hover:border-orange-500/60 transition-all self-start sm:self-center"
+              >
+                <Map size={14} /> Open Interactive Map
+              </button>
             </div>
 
             <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">

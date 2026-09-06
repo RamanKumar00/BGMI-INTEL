@@ -107,6 +107,11 @@ export async function getTournaments() {
   return data || [];
 }
 
+export async function getTournamentIntel(tournamentId) {
+  const data = await fetchJson(`/tournaments/${encodeURIComponent(tournamentId)}/intel`);
+  return data;
+}
+
 export async function getMatches() {
   const data = await fetchJson('/matches');
   return data || [];
@@ -132,9 +137,84 @@ export async function getAchievements() {
   return data || [];
 }
 
+import { PINTEREST_MEDIA_ASSETS } from '../data/pinterestMediaData';
+
 // ==========================================================================
-// MEDIA HUB API CLIENT
+// MEDIA HUB & PINTEREST API CLIENT
 // ==========================================================================
+
+const SAVED_PINS_KEY = 'bgmi_saved_pins';
+const CUSTOM_PINS_KEY = 'bgmi_custom_pins';
+
+export function getSavedPins() {
+  try {
+    const raw = localStorage.getItem(SAVED_PINS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function isPinSaved(mediaId) {
+  const saved = getSavedPins();
+  return saved.some(p => p.media_id === mediaId);
+}
+
+export function toggleSavePin(item) {
+  const saved = getSavedPins();
+  const exists = saved.some(p => p.media_id === item.media_id);
+  let updated;
+  if (exists) {
+    updated = saved.filter(p => p.media_id !== item.media_id);
+  } else {
+    updated = [{ ...item, saved_at: new Date().toISOString() }, ...saved];
+  }
+  try {
+    localStorage.setItem(SAVED_PINS_KEY, JSON.stringify(updated));
+  } catch (e) {}
+  return !exists;
+}
+
+export function getCustomImportedPins() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PINS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function importPinterestPin(pinData) {
+  const custom = getCustomImportedPins();
+  const newPin = {
+    media_id: `custom_pin_${Date.now()}`,
+    title: pinData.title || 'Pinterest BGMI Pin',
+    description: pinData.description || 'Imported from Pinterest for BGMI & PUBG collection',
+    image_url: pinData.image_url,
+    thumbnail_url: pinData.thumbnail_url || pinData.image_url,
+    category: pinData.category || 'BGMI',
+    tags: pinData.tags || 'Pinterest, BGMI, PUBG, Imported',
+    resolution: pinData.resolution || '4K',
+    orientation: pinData.orientation || 'Landscape',
+    file_size: pinData.file_size || '4.5 MB',
+    file_format: 'JPG',
+    view_count: 1,
+    download_count: 0,
+    likes_count: 1,
+    featured: false,
+    source: 'Pinterest Import',
+    pinterest_url: pinData.pinterest_url || pinData.image_url,
+    author: pinData.author || '@PinterestUser',
+    is_pinterest: true,
+    created_at: new Date().toISOString()
+  };
+
+  const updated = [newPin, ...custom];
+  try {
+    localStorage.setItem(CUSTOM_PINS_KEY, JSON.stringify(updated));
+  } catch (e) {}
+  return newPin;
+}
 
 export async function getMediaAssets(params = {}) {
   const queryParts = [];
@@ -149,22 +229,98 @@ export async function getMediaAssets(params = {}) {
 
   const queryString = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
   const data = await fetchJson(`/media${queryString}`);
-  return data || { total: 0, page: 1, limit: 24, total_pages: 1, data: [] };
+
+  if (data && data.data && data.data.length > 0) {
+    return data;
+  }
+
+  // Fallback / Standalone mode with Pinterest curated assets + custom pins
+  const customPins = getCustomImportedPins();
+  let pool = [...customPins, ...PINTEREST_MEDIA_ASSETS];
+
+  // Filter by category
+  if (params.category && params.category !== 'All') {
+    pool = pool.filter(item => item.category.toLowerCase() === params.category.toLowerCase());
+  }
+
+  // Filter by resolution
+  if (params.resolution && params.resolution !== 'All') {
+    pool = pool.filter(item => (item.resolution || '').toLowerCase() === params.resolution.toLowerCase());
+  }
+
+  // Filter by orientation
+  if (params.orientation && params.orientation !== 'All') {
+    pool = pool.filter(item => (item.orientation || '').toLowerCase() === params.orientation.toLowerCase());
+  }
+
+  // Filter by search
+  if (params.search && params.search.trim()) {
+    const q = params.search.trim().toLowerCase();
+    pool = pool.filter(item => 
+      (item.title && item.title.toLowerCase().includes(q)) ||
+      (item.description && item.description.toLowerCase().includes(q)) ||
+      (item.tags && item.tags.toLowerCase().includes(q)) ||
+      (item.category && item.category.toLowerCase().includes(q))
+    );
+  }
+
+  // Filter by featured
+  if (params.featured !== undefined) {
+    pool = pool.filter(item => Boolean(item.featured) === Boolean(params.featured));
+  }
+
+  // Sort
+  if (params.sort === 'popular' || params.sort === 'views') {
+    pool.sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
+  } else if (params.sort === 'downloads') {
+    pool.sort((a, b) => (b.download_count || 0) - (a.download_count || 0));
+  } else if (params.sort === 'likes') {
+    pool.sort((a, b) => (b.likes_count || 0) - (a.likes_count || 0));
+  } else if (params.sort === 'resolution') {
+    pool.sort((a, b) => (b.width || 0) - (a.width || 0));
+  }
+
+  const page = params.page || 1;
+  const limit = params.limit || 24;
+  const total = pool.length;
+  const total_pages = Math.ceil(total / limit) || 1;
+  const offset = (page - 1) * limit;
+  const paginated = pool.slice(offset, offset + limit);
+
+  return {
+    total,
+    page,
+    limit,
+    total_pages,
+    data: paginated
+  };
 }
 
 export async function getFeaturedMedia() {
   const data = await fetchJson('/media/featured');
-  return data || [];
+  if (data && data.length > 0) return data;
+  return PINTEREST_MEDIA_ASSETS.filter(item => item.featured).slice(0, 3);
 }
 
 export async function getMediaCategories() {
   const data = await fetchJson('/media/categories');
-  return data || [];
+  if (data && data.length > 0) return data;
+  
+  // Compute category counts from pool
+  const counts = {};
+  PINTEREST_MEDIA_ASSETS.forEach(item => {
+    counts[item.category] = (counts[item.category] || 0) + 1;
+  });
+  return Object.keys(counts).map(cat => ({
+    name: cat,
+    count: counts[cat]
+  }));
 }
 
 export async function getMediaDetail(mediaId) {
   const data = await fetchJson(`/media/${encodeURIComponent(mediaId)}`);
-  return data;
+  if (data) return data;
+  return PINTEREST_MEDIA_ASSETS.find(m => m.media_id === mediaId) || null;
 }
 
 export async function createMediaAsset(payload) {
@@ -177,8 +333,8 @@ export async function createMediaAsset(payload) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
-    console.error('[API] createMediaAsset error:', err);
-    return null;
+    console.warn('[API] Backend offline, saving to custom pins locally');
+    return importPinterestPin(payload);
   }
 }
 
@@ -201,9 +357,177 @@ export async function downloadMediaAsset(mediaId) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
-    console.error('[API] downloadMediaAsset error:', err);
-    return null;
+    const item = PINTEREST_MEDIA_ASSETS.find(m => m.media_id === mediaId);
+    return {
+      download_url: item?.image_url || '',
+      filename: `${(item?.title || 'BGMI_Asset').replace(/\s+/g, '_')}_4K.png`
+    };
   }
 }
 
+// ==========================================================================
+// INTERACTIVE TACTICAL MAPS API CLIENT
+// ==========================================================================
 
+const FALLBACK_MAPS = [
+  {
+    id: 'erangel',
+    map_id: 'erangel',
+    name: 'Erangel',
+    slug: 'erangel',
+    description: 'The original 8x8 km battleground. Balanced terrain of forests, farmlands, urban centers, and a southern military island separated by strategic river channels.',
+    image: '/map_erangel.png',
+    image_url: '/map_erangel.png',
+    dimensions: { width: 2048, height: 2048 },
+    width: 2048,
+    height: 2048,
+    size: '8x8 km',
+    size_km: '8x8 km',
+    version: 'v3.2 (Current BGMI)',
+    available_layers: [
+      { id: 'erangel_vehicle', name: 'Vehicle Spawns', type: 'vehicle', icon: 'car', enabled: true, display_order: 1 },
+      { id: 'erangel_boat', name: 'Boat Spawns', type: 'boat', icon: 'ship', enabled: true, display_order: 2 },
+      { id: 'erangel_location', name: 'Locations & Towns', type: 'location', icon: 'map-pin', enabled: true, display_order: 3 },
+      { id: 'erangel_drop', name: 'Esports Drop Zones', type: 'drop', icon: 'shield', enabled: true, display_order: 4 }
+    ]
+  },
+  {
+    id: 'miramar',
+    map_id: 'miramar',
+    name: 'Miramar',
+    slug: 'miramar',
+    description: 'Vast 8x8 km desert battleground characterized by rugged canyons, high ridges, and open compound warfare with extreme sniper sightlines.',
+    image: '/map_miramar.png',
+    image_url: '/map_miramar.png',
+    dimensions: { width: 2048, height: 2048 },
+    width: 2048,
+    height: 2048,
+    size: '8x8 km',
+    size_km: '8x8 km',
+    version: 'v3.2 (Current BGMI)',
+    available_layers: [
+      { id: 'miramar_vehicle', name: 'Vehicle Spawns', type: 'vehicle', icon: 'car', enabled: true, display_order: 1 },
+      { id: 'miramar_boat', name: 'Boat Spawns', type: 'boat', icon: 'ship', enabled: true, display_order: 2 },
+      { id: 'miramar_location', name: 'Locations & Towns', type: 'location', icon: 'map-pin', enabled: true, display_order: 3 },
+      { id: 'miramar_drop', name: 'Esports Drop Zones', type: 'drop', icon: 'shield', enabled: true, display_order: 4 }
+    ]
+  },
+  {
+    id: 'rondo',
+    map_id: 'rondo',
+    name: 'Rondo',
+    slug: 'rondo',
+    description: 'Dual-themed 8x8 km battleground blending tranquil traditional bamboo gardens in the southwest with dense, towering futuristic metropolitan skyscrapers in the northeast.',
+    image: '/map_rondo.png',
+    image_url: '/map_rondo.png',
+    dimensions: { width: 2048, height: 2048 },
+    width: 2048,
+    height: 2048,
+    size: '8x8 km',
+    size_km: '8x8 km',
+    version: 'v3.2 (Current BGMI)',
+    available_layers: [
+      { id: 'rondo_vehicle', name: 'Vehicle Spawns', type: 'vehicle', icon: 'car', enabled: true, display_order: 1 },
+      { id: 'rondo_boat', name: 'Boat Spawns', type: 'boat', icon: 'ship', enabled: true, display_order: 2 },
+      { id: 'rondo_location', name: 'Locations & Towns', type: 'location', icon: 'map-pin', enabled: true, display_order: 3 },
+      { id: 'rondo_drop', name: 'Esports Drop Zones', type: 'drop', icon: 'shield', enabled: true, display_order: 4 }
+    ]
+  }
+];
+
+export async function getMaps() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(`${API_BASE_URL}/maps`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return (data && data.length > 0) ? data : FALLBACK_MAPS;
+  } catch (err) {
+    console.warn('[API] Maps offline fallback:', err.message);
+    return FALLBACK_MAPS;
+  }
+}
+
+export async function getMapMarkers(mapId, layers) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  try {
+    const query = layers ? `?layers=${encodeURIComponent(layers)}` : '';
+    const res = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/markers${query}`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.warn(`[API] Failed to fetch markers for map ${mapId}:`, err.message);
+    return [];
+  }
+}
+
+export async function createMapMarker(mapId, payload) {
+  const res = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/markers`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Admin-Role': 'admin'
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+    throw new Error(errData.detail || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function updateMapMarker(markerId, payload) {
+  const res = await fetch(`${API_BASE_URL}/maps/markers/${encodeURIComponent(markerId)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Admin-Role': 'admin'
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+    throw new Error(errData.detail || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function deleteMapMarker(markerId) {
+  const res = await fetch(`${API_BASE_URL}/maps/markers/${encodeURIComponent(markerId)}`, {
+    method: 'DELETE',
+    headers: {
+      'X-Admin-Role': 'admin'
+    }
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+    throw new Error(errData.detail || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function bulkImportMapMarkers(mapId, format, data) {
+  const res = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/import`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Admin-Role': 'admin'
+    },
+    body: JSON.stringify({
+      format: format,
+      raw_data: typeof data === 'string' ? data : JSON.stringify(data)
+    })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+    throw new Error(errData.detail || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}

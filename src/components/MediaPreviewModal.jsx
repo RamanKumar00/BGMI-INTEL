@@ -1,11 +1,17 @@
-import React, { useEffect } from 'react';
-import { X, Download, Share2, Eye, Calendar, Sparkles, Tag, ChevronLeft, ChevronRight, Layers, FileText } from 'lucide-react';
-import { incrementMediaView, downloadMediaAsset } from '../services/api';
+import React, { useEffect, useState } from 'react';
+import { 
+  X, Download, Share2, Eye, Sparkles, Tag, 
+  ChevronLeft, ChevronRight, Bookmark, ExternalLink 
+} from 'lucide-react';
+import { incrementMediaView, downloadMediaAsset, isPinSaved, toggleSavePin } from '../services/api';
 
-export default function MediaPreviewModal({ item, mediaList = [], onClose, onSelectMedia }) {
+export default function MediaPreviewModal({ item, mediaList = [], onClose, onSelectMedia, onSaveToggle }) {
+  const [saved, setSaved] = useState(false);
+
   useEffect(() => {
     if (item?.media_id) {
       incrementMediaView(item.media_id);
+      setSaved(isPinSaved(item.media_id));
     }
   }, [item?.media_id]);
 
@@ -43,14 +49,12 @@ export default function MediaPreviewModal({ item, mediaList = [], onClose, onSel
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentIndex, mediaList, onClose]);
 
-
   const handleDownload = async () => {
     try {
       const res = await downloadMediaAsset(item.media_id);
       const targetUrl = res?.download_url || item.image_url;
       const filename = res?.filename || `${item.title.replace(/\s+/g, '_')}_4K.png`;
 
-      // Trigger high quality browser download
       const a = document.createElement('a');
       a.href = targetUrl;
       a.download = filename;
@@ -64,18 +68,26 @@ export default function MediaPreviewModal({ item, mediaList = [], onClose, onSel
   };
 
   const handleShare = () => {
+    const shareUrl = item.pinterest_url || item.image_url;
     if (navigator.share) {
       navigator.share({
         title: item.title,
-        text: item.description || `Check out this BGMI esports asset on BGMI Intel: ${item.title}`,
-        url: item.image_url
+        text: item.description || `Check out this BGMI/PUBG visual pin: ${item.title}`,
+        url: shareUrl
       }).catch(() => {});
     } else {
-      navigator.clipboard.writeText(item.image_url);
-      alert('High-resolution media link copied to clipboard!');
+      navigator.clipboard.writeText(shareUrl);
+      alert('Media / Pinterest link copied to clipboard!');
     }
   };
 
+  const handleSaveClick = () => {
+    const newState = toggleSavePin(item);
+    setSaved(newState);
+    if (onSaveToggle) onSaveToggle(item.media_id, newState);
+  };
+
+  const pinterestSearchUrl = item.pinterest_url || `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(item.title + ' BGMI PUBG')}`;
   const tagList = item.tags ? item.tags.split(',').map(t => t.trim()) : [];
 
   return (
@@ -114,12 +126,21 @@ export default function MediaPreviewModal({ item, mediaList = [], onClose, onSel
                 <Sparkles size={14} /> FEATURED ASSET
               </div>
             )}
+            
+            {/* Pinterest Source Tag */}
+            <div className="media-lightbox-badge-pinterest">
+              <span className="pinterest-p-icon">P</span>
+              <span>Pinterest Curated</span>
+            </div>
           </div>
 
           {/* Right: Metadata Sidebar */}
           <div className="media-lightbox-sidebar">
             <div className="media-lightbox-header">
-              <span className="media-lightbox-category">{item.category}</span>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="media-lightbox-category">{item.category}</span>
+                {item.author && <span className="text-xs text-gray-400 font-mono">{item.author}</span>}
+              </div>
               <h2 className="media-lightbox-title">{item.title}</h2>
               {item.description && <p className="media-lightbox-desc">{item.description}</p>}
             </div>
@@ -134,6 +155,31 @@ export default function MediaPreviewModal({ item, mediaList = [], onClose, onSel
                 <Download size={18} />
                 <span>DOWNLOAD IMAGE</span>
               </button>
+
+              {/* Save Pin Bookmark */}
+              <button 
+                type="button" 
+                className={`media-lightbox-btn-save ${saved ? 'active' : ''}`}
+                onClick={handleSaveClick}
+                title={saved ? 'Remove from Saved Pins' : 'Save Pin to My Collection'}
+              >
+                <Bookmark size={18} fill={saved ? '#e60023' : 'none'} color={saved ? '#e60023' : 'currentColor'} />
+                <span>{saved ? 'SAVED' : 'SAVE PIN'}</span>
+              </button>
+
+              {/* View on Pinterest External Link */}
+              <a 
+                href={pinterestSearchUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="media-lightbox-btn-pinterest"
+                title="Open and explore more on Pinterest"
+              >
+                <span className="pinterest-p-icon-sm">P</span>
+                <span>PINTEREST</span>
+                <ExternalLink size={14} />
+              </a>
+
               <button 
                 type="button" 
                 className="media-lightbox-btn-share"
