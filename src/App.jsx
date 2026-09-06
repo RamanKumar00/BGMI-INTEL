@@ -4,6 +4,7 @@ import SignUpCard from './components/SignUpCard';
 import FooterBar from './components/FooterBar';
 import DashboardLayout from './components/DashboardLayout';
 import IntelLoadingScreen from './components/IntelLoadingScreen';
+import { audioManager } from './services/audioManager';
 
 const STORAGE_KEY = 'bgmi_intel_user';
 
@@ -50,6 +51,7 @@ export default function App() {
       email: email
     };
     setUser(userData);
+    setIsBooting(true);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(userData));
     } catch (e) {
@@ -58,6 +60,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    audioManager.stopLoginTheme(0);
     setUser(null);
     setIsBooting(false); // Reset boot state
     try {

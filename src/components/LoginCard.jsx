@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User, Lock, Eye, EyeOff, AlertTriangle } from 'lucide-react';
+import { audioManager } from '../services/audioManager';
 
 export default function LoginCard({ onToggleView, onLoginSuccess }) {
   const [emailOrUser, setEmailOrUser] = useState('');
@@ -24,17 +25,20 @@ export default function LoginCard({ onToggleView, onLoginSuccess }) {
       return;
     }
 
+    // Direct synchronous user interaction: unlock audio context immediately
+    audioManager.unlock();
+    audioManager.playBeep('click');
+
     setIsLoading(true);
-    // Simulate API call
+    setSuccess('Welcome back, Soldier! Engaging tactical intelligence...');
+
+    // Crisp transition into cinematic loading sequence with audio
     setTimeout(() => {
       setIsLoading(false);
-      setSuccess('Welcome back, Soldier! Loading tactical intelligence...');
       if (onLoginSuccess) {
-        setTimeout(() => {
-          onLoginSuccess(emailOrUser);
-        }, 1500);
+        onLoginSuccess(emailOrUser);
       }
-    }, 1200);
+    }, 450);
   };
 
   return (

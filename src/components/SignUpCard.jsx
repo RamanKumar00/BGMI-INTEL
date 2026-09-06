@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User, Mail, Lock, Eye, EyeOff, AlertTriangle } from 'lucide-react';
+import { audioManager } from '../services/audioManager';
 
 export default function SignUpCard({ onToggleView, onSignUpSuccess }) {
   const [username, setUsername] = useState('');
@@ -43,17 +44,19 @@ export default function SignUpCard({ onToggleView, onSignUpSuccess }) {
       return;
     }
 
+    // Direct synchronous user interaction: unlock audio context immediately
+    audioManager.unlock();
+    audioManager.playBeep('click');
+
     setIsLoading(true);
-    // Simulate API registration
+    setSuccess('Account created successfully! Deploying to battleground...');
+
     setTimeout(() => {
       setIsLoading(false);
-      setSuccess('Account created successfully! Deploying to battleground...');
       if (onSignUpSuccess) {
-        setTimeout(() => {
-          onSignUpSuccess(username, email);
-        }, 1500);
+        onSignUpSuccess(username, email);
       }
-    }, 1200);
+    }, 450);
   };
 
   return (
