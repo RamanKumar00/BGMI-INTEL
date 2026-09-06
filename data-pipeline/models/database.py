@@ -21,7 +21,8 @@ def get_engine():
     if not os.path.exists(db_path) and os.path.exists("bgmi_intel.db"):
         db_path = os.path.abspath("bgmi_intel.db")
         
-    sqlite_url = f"sqlite:///{db_path.replace('\\', '/')}"
+    clean_db_path = db_path.replace('\\', '/')
+    sqlite_url = f"sqlite:///{clean_db_path}"
     return create_engine(sqlite_url, connect_args={"check_same_thread": False})
 
 engine = get_engine()
